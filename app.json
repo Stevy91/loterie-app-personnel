@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "Loterie POS",
+    "slug": "app-personnel",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": false,
+    "splash": {
+      "image": "./assets/logo-lotto-splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/logo-lotto-splash.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "softwareKeyboardLayoutMode": "resize",
+      "package": "com.stevy91.loteriepos"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "_commentaire": "Version vendue a un proprietaire : nom, package et projet EAS distincts de l'app SaaS (dossier ../app), pour que les deux puissent coexister sur un meme appareil et dans EAS. Au premier `eas build`, EAS creera son propre projectId ici.",
+    "plugins": [
+      "expo-secure-store",
+      "@react-native-community/datetimepicker",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "L'application utilise la camera pour scanner le QR code des fiches."
+        }
+      ]
+    ],
+    "extra": {}
+  }
+}
