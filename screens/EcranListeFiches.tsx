@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  BackHandler,
   ScrollView,
   StyleSheet,
   Text,
@@ -9,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import SelecteurDate from '../composants/SelecteurDate';
 import EcranDetailFiche from './EcranDetailFiche';
 import { alerteConfirmation, alerteSimple } from '../alerte';
@@ -49,6 +51,8 @@ function formaterDateHeure(iso: string): string {
 }
 
 export default function EcranListeFiches({ filtre: filtreInitial, utilisateur, onRetour }: Props) {
+  // Marge basse : evite que la derniere ligne passe sous la barre de navigation.
+  const insets = useSafeAreaInsets();
   const [tickets, setTickets] = useState<TicketResponse[]>([]);
   const [chargement, setChargement] = useState(true);
   const [filtre, setFiltre] = useState(filtreInitial);
@@ -56,6 +60,21 @@ export default function EcranListeFiches({ filtre: filtreInitial, utilisateur, o
   const [dateFin, setDateFin] = useState(new Date());
   const [rechercheTexte, setRechercheTexte] = useState('');
   const [ticketSelectionne, setTicketSelectionne] = useState<number | null>(null);
+
+  // Le detail d'une fiche s'ouvre PAR-DESSUS la liste : le bouton retour du POS
+  // doit d'abord le refermer, sans quitter la liste. Ce gestionnaire est
+  // enregistre apres celui de App.tsx, il est donc appele en premier.
+  useEffect(() => {
+    if (ticketSelectionne === null) return;
+
+    const abonnement = BackHandler.addEventListener('hardwareBackPress', () => {
+      setTicketSelectionne(null);
+      charger();
+      return true;
+    });
+
+    return () => abonnement.remove();
+  }, [ticketSelectionne]);
 
   useEffect(() => {
     charger();
@@ -197,7 +216,7 @@ export default function EcranListeFiches({ filtre: filtreInitial, utilisateur, o
       {chargement ? (
         <ActivityIndicator size="large" style={{ marginTop: 40 }} />
       ) : (
-        <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
+        <ScrollView contentContainerStyle={{ paddingBottom: 40 + insets.bottom }}>
           {ticketsFiltres.length === 0 ? (
             <Text style={styles.vide}>aucun resultat..!</Text>
           ) : (

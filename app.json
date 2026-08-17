@@ -4,11 +4,12 @@
     "slug": "app-personnel",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/icone-app.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": false,
+    "backgroundColor": "#ffffff",
     "splash": {
-      "image": "./assets/logo-lotto-splash.png",
+      "image": "./assets/icone-adaptive.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
@@ -17,9 +18,10 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/logo-lotto-splash.png",
+        "foregroundImage": "./assets/icone-adaptive.png",
         "backgroundColor": "#ffffff"
       },
+      "backgroundColor": "#ffffff",
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "softwareKeyboardLayoutMode": "resize",

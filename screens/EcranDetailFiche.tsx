@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { alerteConfirmation, alerteSimple } from '../alerte';
 import { appelApi } from '../api';
 import { obtenirNumeroSeriePosStocke, Utilisateur } from '../auth';
@@ -15,10 +16,18 @@ interface Props {
 }
 
 export default function EcranDetailFiche({ ticketId, utilisateur, onRetour }: Props) {
+  // Marge basse : evite que le dernier bouton passe sous la barre de navigation.
+  const insets = useSafeAreaInsets();
   const [ticket, setTicket] = useState<TicketResponse | null>(null);
   const [chargement, setChargement] = useState(true);
   const [enCours, setEnCours] = useState(false);
   const [dureeSuppressionMinutes, setDureeSuppressionMinutes] = useState(10);
+
+  // Rejeu : le client peut vouloir rejouer les memes boules sur d'AUTRES zones,
+  // on lui propose donc la liste des zones encore ouvertes aujourd'hui.
+  const [modalRejeu, setModalRejeu] = useState(false);
+  const [tiragesOuverts, setTiragesOuverts] = useState<Tirage[]>([]);
+  const [zonesChoisies, setZonesChoisies] = useState<number[]>([]);
 
   useEffect(() => {
     charger();
@@ -72,44 +81,76 @@ export default function EcranDetailFiche({ ticketId, utilisateur, onRetour }: Pr
     }
   }
 
-  function confirmerRejeu() {
-    if (!ticket) return;
-    alerteConfirmation(
-      'Rejouer cette fiche',
-      `Rejouer les memes boules pour ${Number(ticket.montant_total).toFixed(2)} HTG sur les tirages ouverts aujourd'hui ?`,
-      rejouer,
-      'Oui'
-    );
-  }
+  /**
+   * Les boules a rejouer : on retire les mariages gratuits (generes par le
+   * serveur, ils ne se rejouent pas) et on dedoublonne, car la meme boule peut
+   * apparaitre sur plusieurs zones de la fiche d'origine.
+   */
+  function modeleDeMises() {
+    if (!ticket) return [];
 
-  async function rejouer() {
-    if (!ticket) return;
-    try {
-      setEnCours(true);
-      const reponse = await appelApi('/tirages/du-jour');
-      const tiragesDuJour: Tirage[] = await reponse.json();
-      const tiragesParLoterie = new Map(tiragesDuJour.map((t) => [t.loterie.nom, t]));
+    const vues = new Set<string>();
 
-      const zonesFermees = Array.from(
-        new Set(
-          ticket.mises
-            .filter((m) => !tiragesParLoterie.has(m.tirage.loterie.nom))
-            .map((m) => m.tirage.loterie.nom)
-        )
-      );
-
-      if (zonesFermees.length > 0) {
-        alerteSimple('Zone fermee', `Impossible de rejouer : ${zonesFermees.join(', ')} n'est plus ouvert aujourd'hui.`);
-        return;
-      }
-
-      const mises = ticket.mises.map((m) => ({
-        tirage_id: tiragesParLoterie.get(m.tirage.loterie.nom)!.id,
+    return ticket.mises
+      .filter((m) => !m.mariage_bonus)
+      .filter((m) => {
+        const cle = `${m.type_jeu.id}|${m.numero}|${m.numero_2 ?? ''}|${m.montant}`;
+        if (vues.has(cle)) return false;
+        vues.add(cle);
+        return true;
+      })
+      .map((m) => ({
         type_jeu_id: m.type_jeu.id,
         numero: m.numero,
         numero_2: m.numero_2,
         montant: Number(m.montant),
       }));
+  }
+
+  /** Ouvre le selecteur de zones, en pre-cochant celles de la fiche d'origine. */
+  async function confirmerRejeu() {
+    if (!ticket) return;
+    try {
+      setEnCours(true);
+      const reponse = await appelApi('/tirages/du-jour');
+      const tiragesDuJour: Tirage[] = await reponse.json();
+
+      if (tiragesDuJour.length === 0) {
+        alerteSimple('Aucune zone ouverte', "Aucun tirage n'est ouvert aujourd'hui.");
+        return;
+      }
+
+      const nomsOrigine = new Set(ticket.mises.map((m) => m.tirage.loterie.nom));
+      const preCochees = tiragesDuJour.filter((t) => nomsOrigine.has(t.loterie.nom)).map((t) => t.id);
+
+      setTiragesOuverts(tiragesDuJour);
+      setZonesChoisies(preCochees);
+      setModalRejeu(true);
+    } catch (e: any) {
+      alerteSimple('Erreur', e.message ?? 'Impossible de charger les zones.');
+    } finally {
+      setEnCours(false);
+    }
+  }
+
+  function basculerZone(id: number) {
+    setZonesChoisies((actuel) =>
+      actuel.includes(id) ? actuel.filter((z) => z !== id) : [...actuel, id]
+    );
+  }
+
+  async function rejouer() {
+    if (!ticket || zonesChoisies.length === 0) return;
+
+    try {
+      setEnCours(true);
+      setModalRejeu(false);
+
+      // Les memes boules sont rejouees sur CHAQUE zone selectionnee.
+      const modele = modeleDeMises();
+      const mises = zonesChoisies.flatMap((tirageId) =>
+        modele.map((m) => ({ ...m, tirage_id: tirageId }))
+      );
 
       const reponseCreation = await appelApi('/tickets', {
         method: 'POST',
@@ -192,6 +233,9 @@ export default function EcranDetailFiche({ ticketId, utilisateur, onRetour }: Pr
   const minutesEcoulees = (Date.now() - new Date(ticket.created_at).getTime()) / 60000;
   const peutSupprimer = ticket.statut === 'en_attente' && minutesEcoulees <= dureeSuppressionMinutes;
 
+  // Total du rejeu : les memes boules sont jouees sur chaque zone cochee.
+  const totalRejeu = modeleDeMises().reduce((s, m) => s + m.montant, 0) * zonesChoisies.length;
+
   return (
     <View style={styles.conteneur}>
       <View style={styles.entete}>
@@ -202,7 +246,7 @@ export default function EcranDetailFiche({ ticketId, utilisateur, onRetour }: Pr
         <View style={{ width: 22 }} />
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 + insets.bottom }}>
         <View style={styles.infos}>
           <View style={styles.ligneInfo}>
             <Text style={styles.labelInfo}>Ref code:</Text>
@@ -270,30 +314,198 @@ export default function EcranDetailFiche({ ticketId, utilisateur, onRetour }: Pr
           );
         })}
 
+        {/* Actions, dans le meme style de carte que la page Parametre. */}
         <View style={styles.boutons}>
-          {gagne && !ticket.paye && (
-            <TouchableOpacity style={[styles.bouton, { backgroundColor: '#16a34a' }]} onPress={confirmerPaiement} disabled={enCours}>
-              <Text style={styles.boutonTexte}>Payer</Text>
+          {([
+            ...(gagne && !ticket.paye ? [['Payer', 'cash', '#16a34a', confirmerPaiement] as const] : []),
+            ['Rejouer', 'refresh', '#2563eb', confirmerRejeu] as const,
+            ['Print fiche', 'print', '#e67e22', imprimer] as const,
+            ...(peutSupprimer ? [['Supprimer', 'trash', '#dc2626', confirmerSuppression] as const] : []),
+          ]).map(([libelle, icone, couleur, action]) => (
+            <TouchableOpacity
+              key={libelle}
+              style={[styles.carteAction, { backgroundColor: couleur }]}
+              onPress={action}
+              disabled={enCours}
+              activeOpacity={0.85}
+            >
+              <View style={styles.carteActionIcone}>
+                <Ionicons name={icone as any} size={20} color="#fff" />
+              </View>
+              <Text style={styles.carteActionTexte}>{libelle}</Text>
             </TouchableOpacity>
-          )}
-          <TouchableOpacity style={[styles.bouton, { backgroundColor: '#2563eb' }]} onPress={confirmerRejeu} disabled={enCours}>
-            <Text style={styles.boutonTexte}>Rejouer</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.bouton, { backgroundColor: '#e67e22' }]} onPress={imprimer}>
-            <Text style={styles.boutonTexte}>Print fiche</Text>
-          </TouchableOpacity>
-          {peutSupprimer && (
-            <TouchableOpacity style={[styles.bouton, { backgroundColor: '#dc2626' }]} onPress={confirmerSuppression} disabled={enCours}>
-              <Text style={styles.boutonTexte}>Supprimer</Text>
-            </TouchableOpacity>
-          )}
+          ))}
         </View>
       </ScrollView>
+
+      {/* Selecteur de zones pour le rejeu : le client peut rejouer les memes
+          boules sur d'autres zones que celles de la fiche d'origine. */}
+      <Modal visible={modalRejeu} transparent animationType="fade" onRequestClose={() => setModalRejeu(false)}>
+        <View style={styles.fondModal}>
+          <View style={styles.boiteModal}>
+            <Text style={styles.titreModal}>Rejouer cette fiche</Text>
+            <Text style={styles.sousTitreModal}>
+              Selectionne une ou plusieurs zones ou rejouer les memes boules.
+            </Text>
+
+            {/* Zones en puces sur la meme ligne (retour a la ligne automatique). */}
+            <ScrollView style={styles.listeZones}>
+              <View style={styles.grilleZones}>
+                {tiragesOuverts.map((t) => {
+                  const choisi = zonesChoisies.includes(t.id);
+                  return (
+                    <TouchableOpacity
+                      key={t.id}
+                      style={[styles.puceZone, choisi && styles.puceZoneChoisie]}
+                      onPress={() => basculerZone(t.id)}
+                    >
+                      <Text style={[styles.puceZoneTexte, choisi && styles.puceZoneTexteChoisi]}>
+                        {t.loterie.nom}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </ScrollView>
+
+            <Text style={styles.resumeModal}>
+              {modeleDeMises().length} boule(s) &times; {zonesChoisies.length} zone(s) ={' '}
+              <Text style={styles.resumeTotal}>{totalRejeu.toFixed(2)} HTG</Text>
+            </Text>
+
+            <View style={styles.actionsModal}>
+              <TouchableOpacity style={styles.boutonAnnuler} onPress={() => setModalRejeu(false)}>
+                <Text style={styles.boutonAnnulerTexte}>Annuler</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.boutonValider, zonesChoisies.length === 0 && styles.boutonDesactive]}
+                onPress={rejouer}
+                disabled={zonesChoisies.length === 0}
+              >
+                <Text style={styles.boutonTexte}>Rejouer</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  // Cartes d'action : meme langage visuel que les boutons de Parametre.
+  carteAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginTop: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 3,
+  },
+  carteActionIcone: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  carteActionTexte: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  fondModal: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  boiteModal: {
+    width: '100%',
+    maxHeight: '80%',
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+  },
+  titreModal: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#0f172a',
+  },
+  sousTitreModal: {
+    marginTop: 4,
+    fontSize: 13,
+    color: '#64748b',
+  },
+  listeZones: {
+    marginTop: 14,
+  },
+  grilleZones: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  puceZone: {
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#f8fafc',
+  },
+  puceZoneChoisie: {
+    borderColor: '#2563eb',
+    backgroundColor: '#2563eb',
+  },
+  puceZoneTexte: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  puceZoneTexteChoisi: {
+    color: '#fff',
+  },
+  resumeModal: {
+    marginTop: 14,
+    fontSize: 13,
+    color: '#64748b',
+  },
+  resumeTotal: {
+    fontWeight: 'bold',
+    color: '#0f172a',
+  },
+  actionsModal: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 16,
+  },
+  boutonAnnuler: {
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+  },
+  boutonAnnulerTexte: {
+    color: '#64748b',
+    fontWeight: 'bold',
+  },
+  boutonValider: {
+    backgroundColor: '#2563eb',
+    paddingVertical: 12,
+    paddingHorizontal: 22,
+    borderRadius: 10,
+  },
+  boutonDesactive: {
+    opacity: 0.4,
+  },
   conteneur: {
     flex: 1,
   },
