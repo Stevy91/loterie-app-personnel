@@ -815,7 +815,7 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
     return (
       <View style={styles.centre}>
         <ActivityIndicator size="large" />
-        <Text>Chargement...</Text>
+        <Text style={styles.texteRecu}>Chargement...</Text>
       </View>
     );
   }
@@ -833,11 +833,11 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
 
             {t.mises.filter((m) => !m.mariage_bonus).map((mise) => (
               <View key={mise.id} style={styles.ligneRecu}>
-                <Text>
+                <Text style={styles.texteRecu}>
                   {mise.tirage.loterie.nom} - {mise.type_jeu.nom} - {mise.numero_2 ? `${mise.numero} x ${mise.numero_2}` : mise.numero}
                   {mise.option_combinaison ? ` (option ${mise.option_combinaison})` : ''}
                 </Text>
-                <Text>{Number(mise.montant).toFixed(2)}</Text>
+                <Text style={styles.texteRecu}>{Number(mise.montant).toFixed(2)}</Text>
               </View>
             ))}
 
@@ -846,8 +846,8 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
                 <Text style={styles.titreBonus}>Mariage Gratuit</Text>
                 {t.mises.filter((m) => m.mariage_bonus).map((mise) => (
                   <View key={mise.id} style={styles.ligneRecu}>
-                    <Text>{mise.type_jeu.nom} - {mise.numero} x {mise.numero_2}</Text>
-                    <Text>gratis</Text>
+                    <Text style={styles.texteRecu}>{mise.type_jeu.nom} - {mise.numero} x {mise.numero_2}</Text>
+                    <Text style={styles.texteRecu}>gratis</Text>
                   </View>
                 ))}
               </>
@@ -1363,6 +1363,9 @@ const styles = StyleSheet.create({
   },
   ligneJoueeNumero: {
     fontWeight: '700',
+    // Couleur explicite : sinon blanche en mode sombre, donc le numero joue
+    // disparait sur le fond clair de la liste.
+    color: '#111827',
   },
   badgeOption: {
     width: 16,
@@ -1379,6 +1382,7 @@ const styles = StyleSheet.create({
   },
   ligneJoueeMontant: {
     fontWeight: '600',
+    color: '#111827',
   },
   resume: {
     flexDirection: 'row',
@@ -1430,6 +1434,9 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 12,
     fontSize: 15,
+    // Sans couleur explicite, le texte saisi prend celle du systeme : blanc sur
+    // un telephone en mode sombre, donc invisible sur ce fond clair.
+    color: '#111827',
   },
   checkboxChamp: {
     position: 'absolute',
@@ -1471,10 +1478,15 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 16,
   },
+  // Couleur TOUJOURS explicite sur le recu : sans elle, le texte prend celle du
+  // systeme, qui passe au blanc sur un telephone en mode sombre (ou avec le
+  // « theme sombre force » d'Android). Le recu devenait alors invisible, alors
+  // qu'il s'affichait bien sur les terminaux POS, restes en clair.
   titreRecu: {
     fontSize: 22,
     fontWeight: 'bold',
     marginBottom: 16,
+    color: '#111827',
   },
   titreBonus: {
     textAlign: 'center',
@@ -1495,6 +1507,11 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     textAlign: 'right',
     marginVertical: 12,
+    color: '#111827',
+  },
+  /** Lignes de mise du recu : nom de la zone, jeu, numero, montant. */
+  texteRecu: {
+    color: '#374151',
   },
   // Cartes d'action du recu : meme langage visuel que les boutons de Parametre.
   carteAction: {
@@ -1546,6 +1563,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     marginBottom: 16,
     fontWeight: '600',
+    color: '#111827',
   },
   fondModal: {
     flex: 1,
