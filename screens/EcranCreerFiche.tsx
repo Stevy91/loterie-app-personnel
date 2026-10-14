@@ -100,7 +100,8 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
   const [montant, setMontant] = useState('');
   const [lignes, setLignes] = useState<Ligne[]>([]);
 
-  // Case Boule cochee : 2 chiffres -> joue le numero + son reverse ; 4 chiffres -> marriage a x b et b x a.
+  // Case Boule cochee = « joue aussi l'inverse » : 2 chiffres -> le numero + son
+  // reverse ; 4 chiffres -> le Lotto 4 et sa moitie inversee (1234 et 3412).
   const [bouleCheckee, setBouleCheckee] = useState(false);
   // Case Mise cochee : le montant reste rempli apres validation pour enchainer plusieurs saisies.
   const [miseCheckee, setMiseCheckee] = useState(false);
@@ -216,8 +217,8 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
     // lots a verifier (voir extraireOptionCombinaison). Sans suffixe -> option 1.
     const { numero: numeroSaisi, option: optionCombinaison } = extraireOptionCombinaison(numero);
 
-    // Case Boule cochee : raccourci reverse/marriage directement depuis le champ Boule,
-    // sans passer par les boutons Reverse/MA Auto.
+    // Case Boule cochee : raccourci « joue aussi l'inverse » directement depuis
+    // le champ Boule, sans passer par le bouton Reverse.
     if (bouleCheckee) {
       const typeJeuBase = typeJeuSelectionne ?? typesJeux[0];
       if (!typeJeuBase) {
@@ -234,16 +235,26 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
         return;
       }
       if (numeroSaisi.length === 4) {
-        const a = numeroSaisi.slice(0, 2);
-        const b = numeroSaisi.slice(2, 4);
-        const typeMarriage = typesJeux.find((t) => t.est_combinaison) ?? typeJeuBase;
-        ajouterOuFusionnerLignes(typeMarriage, [
-          { numero: a, numero2: b },
-          { numero: b, numero2: a },
-        ], montantNombre);
+        // Un mariage n'a PAS d'inverse : 12 x 34 et 34 x 12 sortent sur les
+        // memes tirages, donc les jouer tous les deux revient a faire payer
+        // deux fois la meme mise. Le Lotto 4, lui, depend de l'ordre des lots :
+        // 1234 et 3412 sont bien deux mises differentes.
+        const typeLo4 = typesJeux.find((t) => t.nombre_chiffres === 4 && !t.est_combinaison);
+        if (!typeLo4) {
+          alerteSimple('Lotto 4 indisponible', "Aucun jeu a 4 chiffres n'est configure dans le systeme.");
+          return;
+        }
+        const inverse = numeroSaisi.slice(2, 4) + numeroSaisi.slice(0, 2);
+        const numeros = inverse !== numeroSaisi ? [numeroSaisi, inverse] : [numeroSaisi];
+        ajouterOuFusionnerLignes(
+          typeLo4,
+          numeros.map((num) => ({ numero: num, numero2: undefined as string | undefined })),
+          montantNombre,
+          optionCombinaison
+        );
         return;
       }
-      alerteSimple('Numero invalide', 'Avec la case Boule cochee, entre 2 chiffres (reverse) ou 4 chiffres (marriage).');
+      alerteSimple('Numero invalide', 'Avec la case Boule cochee, entre 2 chiffres (reverse) ou 4 chiffres (Lotto 4 + inverse).');
       return;
     }
 
@@ -263,6 +274,29 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
       const numero2Valeur = combinaisonManuelleJeu ? numero2 : undefined;
       ajouterOuFusionnerLignes(typeJeu, [{ numero: numeroSaisi, numero2: numero2Valeur }], montantNombre, optionCombinaison);
       return;
+    }
+
+    // 4 chiffres sans case cochee : c'est un mariage, les deux moities forment
+    // la paire (1234 -> 12 x 34, 3456 -> 34 x 56). Le Lotto 4 reste jouable en
+    // selectionnant son bouton, avec la case cochee pour avoir l'inverse, ou
+    // en tapant le suffixe d'option (« 1234.1 ») : ce suffixe n'a de sens que
+    // pour un Lotto, donc il ecarte le mariage et laisse la detection par
+    // nombre de chiffres faire son travail plus bas.
+    if (numeroSaisi.length === 4 && optionCombinaison === undefined) {
+      // Le mariage saisi a la main, pas « MA Auto » (qui genere lui-meme ses
+      // combinaisons) : meme definition qu'a la validation stricte plus haut.
+      const typeMarriage = typesJeux.find((t) => t.est_combinaison && !t.generation_auto)
+        ?? typesJeux.find((t) => t.est_combinaison);
+      if (typeMarriage) {
+        ajouterOuFusionnerLignes(
+          typeMarriage,
+          [{ numero: numeroSaisi.slice(0, 2), numero2: numeroSaisi.slice(2, 4) }],
+          montantNombre
+        );
+        return;
+      }
+      // Pas de mariage configure : on retombe sur la detection par nombre de
+      // chiffres ci-dessous, qui trouvera le Lotto 4.
     }
 
     // Aucun type de jeu selectionne : on detecte automatiquement le jeu loto qui
@@ -401,12 +435,21 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
     }
 
     const mode = typeJeuSelectionne.generation_auto;
+    // Taille des boules que ce jeu sait combiner / inverser (2 pour un mariage).
+    // Les lignes deja jouees d'une AUTRE taille (Lo3, Lo4, Lo5...) ne sont pas
+    // des operandes valides : sans ce filtre, deux Lo4 donnaient un « mariage »
+    // 1234 x 4576, qui n'a aucun sens et ne peut jamais sortir.
+    const nombreChiffres = typeJeuSelectionne.nombre_chiffres;
 
     if (mode === 'marriage') {
       // Combine 2 par 2 les numeros simples deja joues dans chaque zone selectionnee.
       const nouvellesLignes: Ligne[] = tirageSelectionnes.flatMap((tirage) => {
         const numerosZone = Array.from(
-          new Set(lignes.filter((l) => l.tirage.id === tirage.id && !l.numero2).map((l) => l.numero))
+          new Set(
+            lignes
+              .filter((l) => l.tirage.id === tirage.id && !l.numero2 && l.numero.length === nombreChiffres)
+              .map((l) => l.numero)
+          )
         );
 
         const paires: Ligne[] = [];
@@ -426,7 +469,7 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
       });
 
       if (nouvellesLignes.length === 0) {
-        alerteSimple('Pas assez de numeros', 'Joue au moins 2 numeros simples dans une zone avant de generer les Marriage.');
+        alerteSimple('Pas assez de numeros', `Joue au moins 2 boules de ${nombreChiffres} chiffres dans une zone avant de generer les Marriage.`);
         return;
       }
 
@@ -439,7 +482,11 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
       // Genere le numero inverse de chaque boule simple deja jouee dans chaque zone selectionnee.
       const nouvellesLignes: Ligne[] = tirageSelectionnes.flatMap((tirage) => {
         const numerosZone = Array.from(
-          new Set(lignes.filter((l) => l.tirage.id === tirage.id && !l.numero2).map((l) => l.numero))
+          new Set(
+            lignes
+              .filter((l) => l.tirage.id === tirage.id && !l.numero2 && l.numero.length === nombreChiffres)
+              .map((l) => l.numero)
+          )
         );
 
         const inverses: Ligne[] = [];
@@ -459,7 +506,7 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
       });
 
       if (nouvellesLignes.length === 0) {
-        alerteSimple('Aucun reverse possible', 'Joue au moins un numero simple non palindrome dans une zone avant de generer les Reverse.');
+        alerteSimple('Aucun reverse possible', `Joue au moins une boule de ${nombreChiffres} chiffres non palindrome dans une zone avant de generer les Reverse.`);
         return;
       }
 
@@ -468,7 +515,6 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
       return;
     }
 
-    const nombreChiffres = typeJeuSelectionne.nombre_chiffres;
     const finParChiffre = mode?.match(/^p(\d)$/);
 
     const numeros: string[] = [];
