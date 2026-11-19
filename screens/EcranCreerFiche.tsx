@@ -778,6 +778,7 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
       vendeurNom: nomVendeur(ts[0]),
       logoUrl: utilisateur.logo_url ?? config.logo_url ?? undefined,
       texteFiche: config.text_fiche,
+      afficherQr: config.qr_fiche !== 'Non',
     };
   }
 
