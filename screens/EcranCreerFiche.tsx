@@ -16,6 +16,7 @@ import * as Sharing from 'expo-sharing';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useActionsUniques } from '../actionUnique';
 import { alerteConfirmation, alerteSimple } from '../alerte';
 import { appelApi } from '../api';
 import { messageErreurReseau } from '../fetchAvecTimeout';
@@ -107,9 +108,18 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
   const [miseCheckee, setMiseCheckee] = useState(false);
 
   const [envoiEnCours, setEnvoiEnCours] = useState(false);
+  // Cle d'envoi de la fiche en cours : voir validerTicket. Un ref et non un
+  // state, parce qu'elle doit survivre aux rendus sans en declencher.
+  const cleEnvoi = useRef<string | null>(null);
   // Un client qui joue dans plusieurs zones (tirages) obtient une fiche
   // separee par zone, imprimees ensemble avec un Grand Total.
   const [tickets, setTickets] = useState<TicketResponse[]>([]);
+
+  // Verrou anti double-appui : voir actionUnique.ts. Quand le reseau traine,
+  // le vendeur ne voit rien venir et reappuie ; sans ce verrou la fiche
+  // partait en double.
+  const { enCours, lancer } = useActionsUniques();
+  const occupe = !!enCours || envoiEnCours || chargement;
 
   const [modalPaireVisible, setModalPaireVisible] = useState(false);
   const [montantPaireModal, setMontantPaireModal] = useState('');
@@ -680,6 +690,19 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
     // automatiquement 2 tickets, imprimes ensemble avec un Grand Total.
     const idsZones = [...new Set(lignes.map((l) => l.tirage.id))];
 
+    // Cle d'envoi, generee UNE fois pour cette fiche et conservee tant qu'elle
+    // n'est pas enregistree. Si l'envoi echoue et que le vendeur reappuie, la
+    // meme cle repart : le serveur reconnait la fiche et renvoie celle qu'il a
+    // deja creee, au lieu d'en faire une deuxieme.
+    //
+    // C'est la vraie cause des fiches enregistrees 2 ou 3 fois : le POS
+    // abandonne un appel trop long et affiche « reessaie », mais abandonner ne
+    // l'annule pas cote serveur -- la fiche etait enregistree pendant que le
+    // vendeur voyait un echec.
+    if (cleEnvoi.current === null) {
+      cleEnvoi.current = `${utilisateur.id}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
     try {
       setEnvoiEnCours(true);
       const resultats: TicketResponse[] = [];
@@ -689,6 +712,9 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
         const reponse = await appelApi('/tickets', {
           method: 'POST',
           body: JSON.stringify({
+            // Une cle par ZONE : chaque zone donne sa propre fiche, elles ne
+            // doivent pas se confondre entre elles.
+            cle_idempotence: `${cleEnvoi.current}-${idZone}`,
             mises: lignesZone.map((l) => ({
               tirage_id: l.tirage.id,
               type_jeu_id: l.typeJeu.id,
@@ -698,7 +724,10 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
               montant: l.montant,
             })),
           }),
-        });
+          // Une fiche de plusieurs centaines de mises demande du temps au
+          // serveur. Abandonner au bout de 15 secondes faisait reessayer le
+          // vendeur sur une fiche deja enregistree.
+        }, 60000);
 
         if (!reponse.ok) {
           const erreur = await reponse.json();
@@ -711,6 +740,10 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
         resultats.push(await reponse.json());
       }
 
+      // Enregistree : la cle a fait son office, la suivante sera une AUTRE
+      // fiche. Sans cette remise a zero, revendre les memes boules renverrait
+      // la fiche precedente au lieu d'en creer une nouvelle.
+      cleEnvoi.current = null;
       setTickets(resultats);
     } catch (e: any) {
       alerteSimple('Attention', e.message ?? 'Impossible de creer le ticket.');
@@ -948,12 +981,18 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
         ] as const).map(([libelle, icone, couleur, action]) => (
           <TouchableOpacity
             key={libelle}
-            style={[styles.carteAction, { backgroundColor: couleur }]}
-            onPress={action}
+            // Tant qu'une action tourne, toutes les cartes sont grisees : on ne
+            // veut pas non plus qu'on supprime une fiche pendant qu'elle
+            // s'imprime.
+            style={[styles.carteAction, { backgroundColor: couleur }, enCours ? styles.carteActionInactive : null]}
+            onPress={lancer(libelle, action)}
             activeOpacity={0.85}
+            disabled={!!enCours}
           >
             <View style={styles.carteActionIcone}>
-              <Ionicons name={icone as any} size={20} color="#fff" />
+              {enCours === libelle
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <Ionicons name={icone as any} size={20} color="#fff" />}
             </View>
             <Text style={styles.carteActionTexte}>{libelle}</Text>
           </TouchableOpacity>
@@ -979,27 +1018,45 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
         <TouchableOpacity onPress={onRetour} style={styles.iconeBarre} activeOpacity={0.7}>
           <Ionicons name="arrow-back" size={22} color="#fff" />
         </TouchableOpacity>
-        <TouchableOpacity onPress={viderTout} style={[styles.iconeBarre, styles.iconeBarreCercle]} activeOpacity={0.7}>
+        {/* Les quatre icones partagent le meme verrou : pendant qu'une fiche
+            part, on ne peut ni vider la saisie, ni recharger, ni relancer. */}
+        <TouchableOpacity
+          onPress={lancer('vider', viderTout)}
+          style={[styles.iconeBarre, styles.iconeBarreCercle, occupe ? styles.iconeBarreInactive : null]}
+          activeOpacity={0.7}
+          disabled={occupe}
+        >
           <Ionicons name="trash" size={19} color="#fff" />
         </TouchableOpacity>
         <TouchableOpacity
-          onPress={chargerDonnees}
-          style={[styles.iconeBarre, styles.iconeBarreCercle]}
+          onPress={lancer('recharger', chargerDonnees)}
+          style={[styles.iconeBarre, styles.iconeBarreCercle, occupe ? styles.iconeBarreInactive : null]}
           activeOpacity={0.7}
-          disabled={chargement}
+          disabled={occupe}
         >
-          {chargement ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="refresh" size={20} color="#fff" />}
-        </TouchableOpacity>
-        <TouchableOpacity onPress={imprimerApercu} style={[styles.iconeBarre, styles.iconeBarreCercle]} activeOpacity={0.7}>
-          <Ionicons name="document-text-outline" size={19} color="#fff" />
+          {chargement || enCours === 'recharger'
+            ? <ActivityIndicator size="small" color="#fff" />
+            : <Ionicons name="refresh" size={20} color="#fff" />}
         </TouchableOpacity>
         <TouchableOpacity
-          onPress={validerTicket}
-          style={[styles.iconeBarre, styles.iconeBarreCercle, styles.iconeBarreValider]}
+          onPress={lancer('apercu', imprimerApercu)}
+          style={[styles.iconeBarre, styles.iconeBarreCercle, occupe ? styles.iconeBarreInactive : null]}
           activeOpacity={0.7}
-          disabled={envoiEnCours}
+          disabled={occupe}
         >
-          {envoiEnCours ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="checkmark" size={22} color="#fff" />}
+          {enCours === 'apercu'
+            ? <ActivityIndicator size="small" color="#fff" />
+            : <Ionicons name="document-text-outline" size={19} color="#fff" />}
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={lancer('valider', validerTicket)}
+          style={[styles.iconeBarre, styles.iconeBarreCercle, styles.iconeBarreValider, occupe ? styles.iconeBarreInactive : null]}
+          activeOpacity={0.7}
+          disabled={occupe}
+        >
+          {envoiEnCours || enCours === 'valider'
+            ? <ActivityIndicator size="small" color="#fff" />
+            : <Ionicons name="checkmark" size={22} color="#fff" />}
         </TouchableOpacity>
       </View>
 
@@ -1170,7 +1227,14 @@ export default function EcranCreerFiche({ utilisateur, onRetour }: Props) {
         </View>
       </View>
 
-      <TouchableOpacity style={styles.boutonEntrer} onPress={ajouterLigne} activeOpacity={0.85}>
+      {/* Verrouille comme le reste : un double appui ici ajoutait deux fois la
+          meme mise, donc de l'argent en trop sur la fiche. */}
+      <TouchableOpacity
+        style={[styles.boutonEntrer, occupe ? styles.boutonEntrerInactif : null]}
+        onPress={lancer('entrer', ajouterLigne)}
+        activeOpacity={0.85}
+        disabled={occupe}
+      >
         <Text style={styles.boutonEntrerTexte}>Entrer</Text>
       </TouchableOpacity>
 
@@ -1361,6 +1425,12 @@ const styles = StyleSheet.create({
   iconeBarreValider: {
     backgroundColor: '#16a34a',
   },
+  // Les trois styles « inactif » ci-dessous servent au verrou anti double-appui :
+  // le bouton doit se voir eteint, sinon le vendeur croit que l'appui n'a pas
+  // ete pris et insiste.
+  iconeBarreInactive: {
+    opacity: 0.45,
+  },
   bandeauLoterie: {
     backgroundColor: '#4834d4',
     borderRadius: 16,
@@ -1537,6 +1607,9 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   modalChamp: {},
+  boutonEntrerInactif: {
+    opacity: 0.5,
+  },
   boutonEntrer: {
     backgroundColor: '#6c5ce7',
     margin: 12,
@@ -1590,6 +1663,9 @@ const styles = StyleSheet.create({
     color: '#374151',
   },
   // Cartes d'action du recu : meme langage visuel que les boutons de Parametre.
+  carteActionInactive: {
+    opacity: 0.5,
+  },
   carteAction: {
     flexDirection: 'row',
     alignItems: 'center',

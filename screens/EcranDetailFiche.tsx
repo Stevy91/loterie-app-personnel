@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useActionsUniques } from '../actionUnique';
 import { alerteConfirmation, alerteSimple } from '../alerte';
 import { appelApi } from '../api';
 import { obtenirNumeroSeriePosStocke, Utilisateur } from '../auth';
@@ -22,6 +23,12 @@ export default function EcranDetailFiche({ ticketId, utilisateur, onRetour }: Pr
   const [chargement, setChargement] = useState(true);
   const [enCours, setEnCours] = useState(false);
   const [dureeSuppressionMinutes, setDureeSuppressionMinutes] = useState(10);
+
+  // Verrou anti double-appui (voir actionUnique.ts). Il complete le drapeau
+  // enCours ci-dessus, qui ne couvrait ni l'impression ni le bouton Rejouer de
+  // la fenetre de confirmation, et qui n'affichait rien a l'ecran.
+  const { enCours: actionEnCours, lancer } = useActionsUniques();
+  const occupe = enCours || !!actionEnCours;
 
   // Rejeu : le client peut vouloir rejouer les memes boules sur d'AUTRES zones,
   // on lui propose donc la liste des zones encore ouvertes aujourd'hui.
@@ -146,24 +153,40 @@ export default function EcranDetailFiche({ ticketId, utilisateur, onRetour }: Pr
       setEnCours(true);
       setModalRejeu(false);
 
-      // Les memes boules sont rejouees sur CHAQUE zone selectionnee.
+      // UNE FICHE PAR ZONE, comme a la vente (voir EcranCreerFiche). Tout le
+      // reste du systeme compte une fiche pour une zone : l'impression, les
+      // rapports, l'exposition au risque. Un envoi unique portant les trois
+      // zones creait UNE seule fiche, rattachee a la premiere, et les deux
+      // autres zones disparaissaient alors que la fenetre les avait facturees.
       const modele = modeleDeMises();
-      const mises = zonesChoisies.flatMap((tirageId) =>
-        modele.map((m) => ({ ...m, tirage_id: tirageId }))
-      );
+      const crees: TicketResponse[] = [];
 
-      const reponseCreation = await appelApi('/tickets', {
-        method: 'POST',
-        body: JSON.stringify({ mises }),
-      });
+      for (const tirageId of zonesChoisies) {
+        const reponse = await appelApi('/tickets', {
+          method: 'POST',
+          body: JSON.stringify({
+            mises: modele.map((m) => ({ ...m, tirage_id: tirageId })),
+          }),
+        });
 
-      if (!reponseCreation.ok) {
-        const erreur = await reponseCreation.json();
-        throw new Error(erreur.message);
+        if (!reponse.ok) {
+          const erreur = await reponse.json();
+          // Une zone refusee (plafond atteint, zone fermee) annule celles deja
+          // parties : sinon le vendeur paie des fiches qu'il n'a pas voulues,
+          // pour un rejeu qu'il croit avoir echoue.
+          await Promise.all(
+            crees.map((t) => appelApi(`/tickets/${t.id}/annuler`, { method: 'POST' }).catch(() => {}))
+          );
+          throw new Error(erreur.message ?? 'Erreur inconnue');
+        }
+
+        crees.push(await reponse.json());
       }
 
-      const nouveauTicket: TicketResponse = await reponseCreation.json();
-      alerteSimple('Fiche rejouee', `Nouvelle fiche creee : ${nouveauTicket.numero_ticket}`);
+      alerteSimple(
+        crees.length > 1 ? `${crees.length} fiches rejouees` : 'Fiche rejouee',
+        `Nouvelle(s) fiche(s) : ${crees.map((t) => t.numero_ticket).join(', ')}`
+      );
     } catch (e: any) {
       alerteSimple('Attention', e.message ?? 'Impossible de rejouer cette fiche.');
     } finally {
@@ -330,13 +353,15 @@ export default function EcranDetailFiche({ ticketId, utilisateur, onRetour }: Pr
           ]).map(([libelle, icone, couleur, action]) => (
             <TouchableOpacity
               key={libelle}
-              style={[styles.carteAction, { backgroundColor: couleur }]}
-              onPress={action}
-              disabled={enCours}
+              style={[styles.carteAction, { backgroundColor: couleur }, occupe ? styles.carteActionInactive : null]}
+              onPress={lancer(libelle, action)}
+              disabled={occupe}
               activeOpacity={0.85}
             >
               <View style={styles.carteActionIcone}>
-                <Ionicons name={icone as any} size={20} color="#fff" />
+                {actionEnCours === libelle
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Ionicons name={icone as any} size={20} color="#fff" />}
               </View>
               <Text style={styles.carteActionTexte}>{libelle}</Text>
             </TouchableOpacity>
@@ -383,12 +408,18 @@ export default function EcranDetailFiche({ ticketId, utilisateur, onRetour }: Pr
               <TouchableOpacity style={styles.boutonAnnuler} onPress={() => setModalRejeu(false)}>
                 <Text style={styles.boutonAnnulerTexte}>Annuler</Text>
               </TouchableOpacity>
+              {/* Ce bouton engage de l'argent : il n'etait protege que contre
+                  une liste de zones vide, pas contre un second appui. Sur un
+                  reseau lent, le vendeur reappuyait et la mise partait deux
+                  fois. */}
               <TouchableOpacity
-                style={[styles.boutonValider, zonesChoisies.length === 0 && styles.boutonDesactive]}
-                onPress={rejouer}
-                disabled={zonesChoisies.length === 0}
+                style={[styles.boutonValider, (occupe || zonesChoisies.length === 0) && styles.boutonDesactive]}
+                onPress={lancer('rejouer', rejouer)}
+                disabled={occupe || zonesChoisies.length === 0}
               >
-                <Text style={styles.boutonTexte}>Rejouer</Text>
+                {actionEnCours === 'rejouer'
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Text style={styles.boutonTexte}>Rejouer</Text>}
               </TouchableOpacity>
             </View>
           </View>
@@ -400,6 +431,11 @@ export default function EcranDetailFiche({ ticketId, utilisateur, onRetour }: Pr
 
 const styles = StyleSheet.create({
   // Cartes d'action : meme langage visuel que les boutons de Parametre.
+  // Verrou anti double-appui : le bouton doit se voir eteint, sinon le vendeur
+  // croit que son appui n'a pas ete pris et insiste.
+  carteActionInactive: {
+    opacity: 0.5,
+  },
   carteAction: {
     flexDirection: 'row',
     alignItems: 'center',
