@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useActionsUniques } from '../actionUnique';
 import { alerteConfirmation, alerteSimple } from '../alerte';
@@ -101,7 +101,16 @@ export default function EcranDetailFiche({ ticketId, utilisateur, onRetour }: Pr
     return ticket.mises
       .filter((m) => !m.mariage_bonus)
       .filter((m) => {
-        const cle = `${m.type_jeu.id}|${m.numero}|${m.numero_2 ?? ''}|${m.montant}`;
+        // L'option fait partie de l'identite de la mise : « Lo4 1234 (1) » et
+        // « Lo4 1234 (2) » sont deux paris differents, au meme montant. Sans
+        // elle dans la cle, le dedoublonnage en supprimait un.
+        const cle = [
+          m.type_jeu.id,
+          m.numero,
+          m.numero_2 ?? '',
+          m.option_combinaison ?? '',
+          m.montant,
+        ].join('|');
         if (vues.has(cle)) return false;
         vues.add(cle);
         return true;
@@ -110,6 +119,10 @@ export default function EcranDetailFiche({ ticketId, utilisateur, onRetour }: Pr
         type_jeu_id: m.type_jeu.id,
         numero: m.numero,
         numero_2: m.numero_2,
+        // Oubliee ici, l'option disparaissait de la fiche rejouee : l'original
+        // imprimait « Lo4 1234(1) », le rejeu « Lo4 1234 ». Le client payait
+        // le meme prix pour un autre pari.
+        option_combinaison: m.option_combinaison,
         montant: Number(m.montant),
       }));
   }
@@ -183,9 +196,19 @@ export default function EcranDetailFiche({ ticketId, utilisateur, onRetour }: Pr
         crees.push(await reponse.json());
       }
 
-      alerteSimple(
+      // Imprimer tout de suite : le client attend sa fiche au comptoir, et
+      // sans cette proposition il fallait sortir de l'ecran, retrouver la
+      // nouvelle fiche dans la liste, l'ouvrir, puis l'imprimer -- une par
+      // zone. On imprime les fiches REJOUEES, pas celle d'origine.
+      const numeros = crees.map((t) => t.numero_ticket).join(', ');
+      alerteConfirmation(
         crees.length > 1 ? `${crees.length} fiches rejouees` : 'Fiche rejouee',
-        `Nouvelle(s) fiche(s) : ${crees.map((t) => t.numero_ticket).join(', ')}`
+        `Nouvelle(s) fiche(s) : ${numeros}\n\nImprimer maintenant ?`,
+        () => {
+          void imprimerFiches(crees);
+        },
+        crees.length > 1 ? 'Imprimer les fiches' : 'Imprimer',
+        'Plus tard'
       );
     } catch (e: any) {
       alerteSimple('Attention', e.message ?? 'Impossible de rejouer cette fiche.');
@@ -194,21 +217,30 @@ export default function EcranDetailFiche({ ticketId, utilisateur, onRetour }: Pr
     }
   }
 
-  async function imprimer() {
-    if (!ticket) return;
+  /**
+   * Imprime une ou plusieurs fiches. Prend une liste plutot que la fiche
+   * affichee, pour servir aussi le rejeu : celui-ci cree une fiche par zone,
+   * et c'est celles-la qu'il faut sortir, pas celle qu'on regarde.
+   */
+  async function imprimerFiches(fiches: TicketResponse[]) {
+    if (fiches.length === 0) return;
+
+    // L'entete (vendeur, adresses) est la meme pour toutes : un rejeu part
+    // toujours du meme vendeur, sur le meme terminal.
+    const premiere = fiches[0];
 
     try {
       const config = await obtenirConfiguration();
-      const parent = ticket.agent?.parent?.name;
-      const vendeurNom = parent ? `${parent} ${ticket.agent?.name}` : (ticket.agent?.name ?? '');
+      const parent = premiere.agent?.parent?.name;
+      const vendeurNom = parent ? `${parent} ${premiere.agent?.name}` : (premiere.agent?.name ?? '');
       // Le numero de serie de CET appareil (celui qui reimprime maintenant),
       // pas celui du createur d'origine de la fiche.
-      const numeroSeriePos = (await obtenirNumeroSeriePosStocke()) ?? String(ticket.agent?.id ?? '');
+      const numeroSeriePos = (await obtenirNumeroSeriePosStocke()) ?? String(premiere.agent?.id ?? '');
 
-      await imprimerFichesSunmi([ticket], {
+      await imprimerFichesSunmi(fiches, {
         nomCompagnie: config.app_name ?? 'Lotterie',
-        adresseAgent: ticket.agent?.adresse,
-        adresseProprietaire: ticket.agent?.proprietaire_adresse,
+        adresseAgent: premiere.agent?.adresse,
+        adresseProprietaire: premiere.agent?.proprietaire_adresse,
         telephoneAgent: utilisateur.telephone,
         telephoneProprietaire: utilisateur.proprietaire_telephone,
         posId: numeroSeriePos,
@@ -348,7 +380,7 @@ export default function EcranDetailFiche({ ticketId, utilisateur, onRetour }: Pr
           {([
             ...(gagne && !ticket.paye ? [['Payer', 'cash', '#16a34a', confirmerPaiement] as const] : []),
             ['Rejouer', 'refresh', '#2563eb', confirmerRejeu] as const,
-            ['Print fiche', 'print', '#e67e22', imprimer] as const,
+            ['Print fiche', 'print', '#e67e22', () => imprimerFiches([ticket])] as const,
             ...(peutSupprimer ? [['Supprimer', 'trash', '#dc2626', confirmerSuppression] as const] : []),
           ]).map(([libelle, icone, couleur, action]) => (
             <TouchableOpacity

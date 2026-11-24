@@ -14,6 +14,9 @@
     "preview": {
       "distribution": "internal",
       "android": {
+        // Les architectures embarquees sont filtrees par
+        // plugins/abi-arm-seulement.js. On avait d'abord essaye ici un
+        // -PreactNativeArchitectures : mesure sur l'APK, sans aucun effet.
         "buildType": "apk"
       }
     },

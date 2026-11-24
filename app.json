@@ -36,6 +36,7 @@
     },
     "_commentaire": "Version vendue a un proprietaire : nom, package et projet EAS distincts de l'app SaaS (dossier ../app), pour que les deux puissent coexister sur un meme appareil et dans EAS. Au premier `eas build`, EAS creera son propre projectId ici.",
     "plugins": [
+      "./plugins/abi-arm-seulement",
       "expo-secure-store",
       "@react-native-community/datetimepicker",
       [
