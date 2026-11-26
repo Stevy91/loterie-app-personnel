@@ -7,8 +7,10 @@ import { appelApi, appelApiFichier } from '../api';
 import { Utilisateur } from '../auth';
 import EcranCommission from './EcranCommission';
 import EcranCompte from './EcranCompte';
+import EcranImprimante from './EcranImprimante';
 import EcranNumeroGagnant from './EcranNumeroGagnant';
 import EcranTirageDisponible from './EcranTirageDisponible';
+import { usePaddingEntete } from './enteteEcran';
 
 interface Props {
   utilisateur: Utilisateur;
@@ -20,8 +22,9 @@ function bientotDisponible(fonctionnalite: string) {
 }
 
 export default function EcranParametre({ utilisateur, onDeconnecter }: Props) {
+  const paddingEntete = usePaddingEntete();
   const [configuration, setConfiguration] = useState<Record<string, string>>({});
-  const [sousEcran, setSousEcran] = useState<'accueil' | 'compte' | 'tirages' | 'numeros-gagnants' | 'commission'>('accueil');
+  const [sousEcran, setSousEcran] = useState<'accueil' | 'compte' | 'tirages' | 'numeros-gagnants' | 'commission' | 'imprimante'>('accueil');
   const [logoUrl, setLogoUrl] = useState<string | null>(utilisateur.logo_url);
   const [televersementEnCours, setTeleversementEnCours] = useState(false);
 
@@ -97,8 +100,12 @@ export default function EcranParametre({ utilisateur, onDeconnecter }: Props) {
     return <EcranCommission utilisateur={utilisateur} onRetour={() => setSousEcran('accueil')} />;
   }
 
+  if (sousEcran === 'imprimante') {
+    return <EcranImprimante onRetour={() => setSousEcran('accueil')} />;
+  }
+
   return (
-    <ScrollView style={styles.conteneur} contentContainerStyle={{ paddingBottom: 40 }}>
+    <ScrollView style={[styles.conteneur, paddingEntete]} contentContainerStyle={{ paddingBottom: 40 }}>
       <Text style={styles.titre}>Parametre</Text>
 
       <View style={styles.grille}>
@@ -145,6 +152,17 @@ export default function EcranParametre({ utilisateur, onDeconnecter }: Props) {
           </View>
           <Text style={styles.boutonTexte}>Ma commission</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.carteBouton, { backgroundColor: '#7c3aed' }]}
+          activeOpacity={0.85}
+          onPress={() => setSousEcran('imprimante')}
+        >
+          <View style={styles.iconeCercle}>
+            <Ionicons name="print-outline" size={22} color="#fff" />
+          </View>
+          <Text style={styles.boutonTexte}>Imprimante</Text>
+        </TouchableOpacity>
       </View>
 
       {logoUrl && (
@@ -181,7 +199,6 @@ const styles = StyleSheet.create({
   conteneur: {
     flex: 1,
     backgroundColor: '#fff',
-    paddingTop: 50,
     paddingHorizontal: 16,
   },
   titre: {
